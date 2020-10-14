@@ -811,6 +811,7 @@ import (
 	InsertValues			"Rest part of INSERT/REPLACE INTO statement"
 	JoinTable 			"join table"
 	JoinType			"join type"
+	JoinSpecifcation		"join specification"
 	LocationLabelList		"location label name list"
 	LikeEscapeOpt 			"like escape option"
 	LikeTableWithOrWithoutParen	"LIKE table_name or ( LIKE table_name )"
@@ -3810,6 +3811,10 @@ JoinTable:
 		$$ = &ast.Join{Left: $1.(ast.ResultSetNode), Right: $3.(ast.ResultSetNode), Tp: ast.CrossJoin}
 	}
 	/* Your code here. */
+|	TableRef JoinType OuterOpt "JOIN" TableRef JoinSpecifcation %prec tableRefPriority
+	{
+		$$ = &ast.Join{Left: $1.(ast.ResultSetNode), Right: $5.(ast.ResultSetNode), Tp: $2.(ast.JoinType)}
+	}
 
 JoinType:
 	"LEFT"
@@ -3819,6 +3824,12 @@ JoinType:
 |	"RIGHT"
 	{
 		$$ = ast.RightJoin
+	}
+
+JoinSpecifcation:
+	"ON" Expression
+	{
+		$$ = &ast.OnCondition{Expr: $2}
 	}
 
 OuterOpt:
