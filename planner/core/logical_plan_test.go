@@ -67,6 +67,7 @@ func (s *testPlanSuite) TestPredicatePushDown(c *C) {
 	s.testData.GetTestCases(c, &input, &output)
 	ctx := context.Background()
 	for ith, ca := range input {
+		c.Log(ca)
 		comment := Commentf("for %s", ca)
 		stmt, err := s.ParseOneStmt(ca, "", "")
 		c.Assert(err, IsNil, comment)
