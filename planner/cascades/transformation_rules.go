@@ -670,6 +670,7 @@ func (r *PushSelDownJoin) OnTransform(old *memo.ExprIter) (newExprs []*memo.Grou
 		leftCond = leftPushCond
 		rightCond = rightPushCond
 	case plannercore.LeftOuterJoin:
+
 	case plannercore.RightOuterJoin:
 	default:
 		// TODO: Enhance this rule to deal with LeftOuter/RightOuter/Semi/SmiAnti/LeftOuterSemi/LeftOuterSemiAnti Joins.

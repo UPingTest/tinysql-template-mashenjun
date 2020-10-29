@@ -15,13 +15,16 @@ package statistics
 
 import (
 	"reflect"
+	"sort"
 
+	"github.com/cznic/sortutil"
 	"github.com/pingcap/errors"
+	"github.com/pingcap/tipb/go-tipb"
+	"github.com/spaolacci/murmur3"
+
 	"github.com/pingcap/tidb/sessionctx/stmtctx"
 	"github.com/pingcap/tidb/tablecodec"
 	"github.com/pingcap/tidb/types"
-	"github.com/pingcap/tipb/go-tipb"
-	"github.com/spaolacci/murmur3"
 )
 
 // CMSketch is used to estimate point queries.
@@ -50,6 +53,12 @@ func (c *CMSketch) InsertBytes(bytes []byte) {
 // insertBytesByCount adds the bytes value into the TopN (if value already in TopN) or CM Sketch by delta, this does not updates c.defaultValue.
 func (c *CMSketch) insertBytesByCount(bytes []byte, count uint64) {
 	// TODO: implement the insert method.
+	h1, h2 := murmur3.Sum128(bytes)
+	c.count += count
+	for i := range c.table {
+		j := (h1 + h2*uint64(i)) % uint64(c.width)
+		c.table[i][j] += uint32(count)
+	}
 }
 
 func (c *CMSketch) queryValue(sc *stmtctx.StatementContext, val types.Datum) (uint64, error) {
@@ -66,9 +75,27 @@ func (c *CMSketch) QueryBytes(d []byte) uint64 {
 	return c.queryHashValue(h1, h2)
 }
 
+// we use stander CMMSketch method to calculate value,
+// the real implement in TiDB 4.7 use a temp value to distinguish before and after eliminating noise.
 func (c *CMSketch) queryHashValue(h1, h2 uint64) uint64 {
 	// TODO: implement the query method.
-	return uint64(0)
+	vals := make([]uint32, c.depth)
+	for i := range c.table {
+		j := c.calIndex(h1, h2, i)
+		if c.table[i][j] > 0 {
+			noise := (c.count - uint64(c.table[i][j])) / (uint64(c.width) - 1)
+			if uint64(c.table[i][j]) > noise {
+				vals[i] = c.table[i][j] - uint32(noise)
+			}
+		}
+	}
+	sort.Sort(sortutil.Uint32Slice(vals))
+	res := vals[(c.depth-1)/2] + (vals[c.depth/2]-vals[(c.depth-1)/2])/2
+	return uint64(res)
+}
+
+func (c *CMSketch) calIndex(h1, h2 uint64, i int) uint64 {
+	return (h1 + h2*uint64(i)) % uint64(c.width)
 }
 
 // MergeCMSketch merges two CM Sketch.
