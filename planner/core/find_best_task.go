@@ -16,6 +16,8 @@ package core
 import (
 	"math"
 
+	"golang.org/x/tools/container/intsets"
+
 	"github.com/pingcap/tidb/expression"
 	"github.com/pingcap/tidb/parser/ast"
 	"github.com/pingcap/tidb/parser/model"
@@ -24,7 +26,6 @@ import (
 	"github.com/pingcap/tidb/planner/util"
 	"github.com/pingcap/tidb/types"
 	"github.com/pingcap/tidb/util/chunk"
-	"golang.org/x/tools/container/intsets"
 )
 
 const (
@@ -212,7 +213,57 @@ type candidatePath struct {
 // and there exists one factor that `x` is better than `y`, then `x` is better than `y`.
 func compareCandidates(lhs, rhs *candidatePath) int {
 	// TODO: implement the content according to the header comment.
+	// 0 0 0
+	// b2b1b0,
+	// b0 -> 1, strictly cover the other column set
+	// b1 -> 1 match physical property, 0 not match
+	// b3 -> 1 is single scan, 0 not single scan
+	colSetResult, ok := compareColumnSet(lhs.columnSet, rhs.columnSet)
+	if !ok {
+		return 0
+	}
+	var lMask, rMask uint
+	if colSetResult == 1 {
+		lMask |= 1
+	} else if colSetResult == -1 {
+		rMask |= 1
+	}
+	if lhs.isMatchProp {
+		lMask |= 1 << 1
+	}
+	if lhs.isSingleScan {
+		lMask |= 1 << 2
+	}
+	if rhs.isMatchProp {
+		rMask |= 1 << 1
+	}
+	if rhs.isSingleScan {
+		rMask |= 1 << 2
+	}
+	if lMask^rMask == 0 {
+		return 0
+	} else if lMask|rMask == lMask {
+		return 1
+	} else if lMask|rMask == rMask {
+		return -1
+	}
 	return 0
+}
+
+// same as the TiDB implementation
+func compareColumnSet(lCols, rCols *intsets.Sparse) (int, bool) {
+	if lCols.SubsetOf(rCols) {
+		if lCols.Len() == rCols.Len() {
+			return 0, true
+		}
+		return -1, true
+	} else if rCols.SubsetOf(lCols) {
+		if lCols.Len() == rCols.Len() {
+			return 0, true
+		}
+		return 1, true
+	}
+	return 0, false
 }
 
 func (ds *DataSource) getTableCandidate(path *util.AccessPath, prop *property.PhysicalProperty) *candidatePath {
@@ -274,7 +325,20 @@ func (ds *DataSource) skylinePruning(prop *property.PhysicalProperty) []*candida
 		// TODO: Here is the pruning phase. Will prune the access path which is must worse than others.
 		//       You'll need to implement the content in function `compareCandidates`.
 		//       And use it to prune unnecessary paths.
-		candidates = append(candidates, currentCandidate)
+		pruned := false
+		for i := len(candidates) - 1; i >= 0; i-- {
+			result := compareCandidates(candidates[i], currentCandidate)
+			if result == 1 {
+				pruned = true
+				// We can break here because the current candidate cannot prune others anymore.
+				break
+			} else if result == -1 {
+				candidates = append(candidates[:i], candidates[i+1:]...)
+			}
+		}
+		if !pruned {
+			candidates = append(candidates, currentCandidate)
+		}
 	}
 	return candidates
 }
