@@ -14,8 +14,11 @@
 package expression
 
 import (
+	"go.uber.org/zap"
+
 	"github.com/pingcap/tidb/sessionctx"
 	"github.com/pingcap/tidb/util/chunk"
+	"github.com/pingcap/tidb/util/logutil"
 )
 
 type columnEvaluator struct {
@@ -120,6 +123,8 @@ func (e *EvaluatorSuite) Vectorizable() bool {
 // NOTE: "defaultEvaluator" must be evaluated before "columnEvaluator".
 func (e *EvaluatorSuite) Run(ctx sessionctx.Context, input, output *chunk.Chunk) error {
 	if e.defaultEvaluator != nil {
+		logutil.BgLogger().Info("EvaluatorSuite",
+			zap.Int("input.NumRows", input.NumRows()))
 		err := e.defaultEvaluator.run(ctx, input, output)
 		if err != nil {
 			return err
