@@ -132,7 +132,7 @@ func (s *joinReorderDPSolver) dpSearch(subnet []int,
 	// bestPlan[s] is nil can be treated as bestCost[s] = +inf.
 	for i := uint(0); i < nodeCnt; i++ {
 		bestPlan[1<<subnet[i]] = s.curJoinGroup[subnet[i]]
-		totalBitmap |= 1<<subnet[i]
+		totalBitmap |= 1 << subnet[i]
 	}
 
 	for size := uint(2); size <= nodeCnt; size++ {
@@ -259,10 +259,10 @@ func isOverlap(lBitmap, rBitmap uint) bool {
 	return lBitmap&rBitmap > 0
 }
 
-func adjacent2Subnet(adjacent [][]int) ([][]int) {
+func adjacent2Subnet(adjacent [][]int) [][]int {
 	visited := make([]bool, len(adjacent))
 	subnets := make([][]int, 0)
-	for nodeID, _ := range adjacent {
+	for nodeID := range adjacent {
 		if visited[nodeID] {
 			continue
 		}

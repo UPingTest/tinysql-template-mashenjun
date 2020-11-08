@@ -73,9 +73,9 @@ type outerChkResource struct {
 // and push `chk` into `src` after processing, join worker goroutines get the empty chunk from `src`
 // and push new data into this chunk.
 type hashjoinWorkerResult struct {
-	chk     *chunk.Chunk
-	err     error
-	src     chan<- *chunk.Chunk
+	chk *chunk.Chunk
+	err error
+	src chan<- *chunk.Chunk
 }
 
 // Close implements the Executor Close interface.
@@ -320,7 +320,7 @@ func (e *HashJoinExec) runJoinWorker(workerID uint, outerKeyColIdx []int) {
 
 func (e *HashJoinExec) getNewJoinResult(workerID uint) (bool, *hashjoinWorkerResult) {
 	joinResult := &hashjoinWorkerResult{
-		src:     e.joinChkResourceCh[workerID],
+		src: e.joinChkResourceCh[workerID],
 	}
 	ok := true
 	select {

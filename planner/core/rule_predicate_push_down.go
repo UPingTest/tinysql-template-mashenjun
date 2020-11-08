@@ -238,6 +238,7 @@ func (p *LogicalJoin) updateEQCond() {
 	}
 }
 
+// UpdateEQCond just call the LogicalJoin.updateEQCond
 func (p *LogicalJoin) UpdateEQCond() {
 	p.updateEQCond()
 }
@@ -363,7 +364,7 @@ func (la *LogicalAggregation) PredicatePushDown(predicates []expression.Expressi
 	canBePushDown, canNotBePushDown := splitSetGetVarFunc(la.GroupByItems)
 	remain, newPlan := la.baseLogicalPlan.PredicatePushDown(append(canBePushDown, predicates...))
 	remain = append(remain, canNotBePushDown...)
-	return predicates, newPlan
+	return remain, newPlan
 }
 
 // PredicatePushDown implements LogicalPlan PredicatePushDown interface.
