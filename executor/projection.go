@@ -195,12 +195,10 @@ func (e *ProjectionExec) parallelExecute(ctx context.Context, chk *chunk.Chunk) 
 	if !ok {
 		return nil
 	}
-	logutil.BgLogger().Info("parallelExecute before", zap.Any("output.chk", output.chk.NumRows()))
 	err := <-output.done
 	if err != nil {
 		return err
 	}
-	logutil.BgLogger().Info("parallelExecute done", zap.Any("output.chk", output.chk.NumRows()))
 	chk.SwapColumns(output.chk)
 	e.fetcher.outputCh <- output
 	return nil
@@ -320,7 +318,7 @@ func (f *projectionInputFetcher) run(ctx context.Context) {
 	}()
 
 	for {
-		input := readProjectionInput(f.inputCh, f.globalFinishCh, "Fetcher")
+		input := readProjectionInput(f.inputCh, f.globalFinishCh)
 		if input == nil {
 			return
 		}
@@ -336,7 +334,6 @@ func (f *projectionInputFetcher) run(ctx context.Context) {
 		requiredRows := atomic.LoadInt64(&f.proj.parentReqRows)
 		input.chk.SetRequiredRows(int(requiredRows), f.proj.maxChunkSize)
 		err := Next(ctx, f.child, input.chk)
-		logutil.BgLogger().Info("projectionInputFetcher after Next", zap.Int("input.chk", input.chk.NumRows()))
 		if err != nil || input.chk.NumRows() == 0 {
 			output.done <- err
 			return
@@ -381,7 +378,7 @@ func (w *projectionWorker) run(ctx context.Context) {
 	}()
 
 	for {
-		input := readProjectionInput(w.inputCh, w.globalFinishCh, "Worker")
+		input := readProjectionInput(w.inputCh, w.globalFinishCh)
 		if input == nil {
 			return
 		}
@@ -412,13 +409,11 @@ func recoveryProjection(output *projectionOutput, r interface{}) {
 	logutil.BgLogger().Error("projection executor panicked", zap.String("error", fmt.Sprintf("%v", r)), zap.String("stack", string(buf)))
 }
 
-func readProjectionInput(inputCh <-chan *projectionInput, finishCh <-chan struct{}, caller string) *projectionInput {
+func readProjectionInput(inputCh <-chan *projectionInput, finishCh <-chan struct{}) *projectionInput {
 	select {
 	case <-finishCh:
-		logutil.BgLogger().Info("EvaluatorSuite finishCh nil", zap.String("caller", caller))
 		return nil
 	case input, ok := <-inputCh:
-		logutil.BgLogger().Info("EvaluatorSuite inputCh", zap.Bool("ok", ok), zap.Int("input.chk", input.chk.NumRows()), zap.String("caller", caller))
 		if !ok {
 			return nil
 		}
