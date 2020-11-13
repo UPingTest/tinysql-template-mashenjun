@@ -361,10 +361,44 @@ func (la *LogicalAggregation) PredicatePushDown(predicates []expression.Expressi
 	// TODO: Here you need to push the predicates across the aggregation.
 	//       A simple example is that `select * from (select count(*) from t group by b) tmp_t where b > 1` is the same with
 	//       `select * from (select count(*) from t where b > 1 group by b) tmp_t.
-	canBePushDown, canNotBePushDown := splitSetGetVarFunc(la.GroupByItems)
-	remain, newPlan := la.baseLogicalPlan.PredicatePushDown(append(canBePushDown, predicates...))
-	remain = append(remain, canNotBePushDown...)
-	return remain, newPlan
+	// canBePushDown, canNotBePushDown := splitSetGetVarFunc(la.GroupByItems)
+	// remain, newPlan := la.baseLogicalPlan.PredicatePushDown(append(canBePushDown, predicates...))
+	// remain = append(remain, canNotBePushDown...)
+	// return remain, newPlan
+	// check if any predicate's arguments is contained in the the GroupByColumns of la
+	fnArgsOrigin := make([]expression.Expression, 0)
+	for _, fn := range la.AggFuncs {
+		fnArgsOrigin = append(fnArgsOrigin, fn.Args[0])
+	}
+	canPushDownConds := make([]expression.Expression, 0)
+	gbCols := expression.NewSchema(la.GetGroupByCols()...)
+
+	for _, cond := range predicates {
+		switch cond.(type) {
+		case *expression.Constant:
+			canPushDownConds = append(canPushDownConds, cond)
+			ret = append(ret, cond)
+		case *expression.ScalarFunction:
+			cols := expression.ExtractColumns(cond)
+			canPushDown := true
+			for _, col := range cols {
+				if !gbCols.Contains(col) {
+					canPushDown = false
+					break
+				}
+			}
+			if canPushDown {
+				newFunc := expression.ColumnSubstitute(cond, la.Schema(), fnArgsOrigin)
+				canPushDownConds = append(canPushDownConds, newFunc)
+			} else {
+				ret = append(ret, cond)
+			}
+		default:
+			ret = append(ret, cond)
+		}
+	}
+	la.baseLogicalPlan.PredicatePushDown(canPushDownConds)
+	return ret, la
 }
 
 // PredicatePushDown implements LogicalPlan PredicatePushDown interface.
