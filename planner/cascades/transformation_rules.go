@@ -258,9 +258,11 @@ func (r *PushSelDownTiKVSingleGather) OnTransform(old *memo.ExprIter) (newExprs 
 	// The field content of TiKVSingleGather would not be modified currently, so we
 	// just reference the same tg instead of making a copy of it.
 	//
-	// TODO: if we save pushed filters later in TiKVSingleGather, in order to do partition
+	// TODO: if we save pushed selection later in TiKVSingleGather, in order to do partition
 	//       pruning or skyline pruning, we need to make a copy of the TiKVSingleGather here.
-	tblGatherExpr := memo.NewGroupExpr(sg)
+	newSg := *sg
+	// use the copied logic plan to construct the group expression
+	tblGatherExpr := memo.NewGroupExpr(&newSg)
 	tblGatherExpr.Children = append(tblGatherExpr.Children, pushedSelGroup)
 	if len(remained) == 0 {
 		// `oldSel -> oldTg -> any` is transformed to `newTg -> pushedSel -> any`.
@@ -495,7 +497,76 @@ func NewRulePushSelDownAggregation() Transformation {
 // or just keep the selection unchanged.
 func (r *PushSelDownAggregation) OnTransform(old *memo.ExprIter) (newExprs []*memo.GroupExpr, eraseOld bool, eraseAll bool, err error) {
 	// TODO: implement the algo according to the header comment.
-	return []*memo.GroupExpr{old.GetExpr()}, false, false, nil
+	// 主要判断依据就是sel的expression用到所有的column是否都被agg所包含，
+	// 如果都包含，该expression可以下推，归属于pushed_sel的expression，
+	// 如果不都包含，该expression不能下推，归属于remained_sel中的expression
+
+	// 如果没有pushed_sel的expression，just keep the selection unchanged
+	// 根据remained_sel的size判断返回agg->sel->x 还是 sel->agg->sel->x
+	// 拿到sel和agg
+	sel := old.GetExpr().ExprNode.(*plannercore.LogicalSelection)
+	agg := old.Children[0].GetExpr().ExprNode.(*plannercore.LogicalAggregation)
+	var pushedExprs []expression.Expression
+	var remainedExprs []expression.Expression
+	// 重新生成agg的schema，为了使用contain()判断是否包含某个col
+	groupByColumns := expression.NewSchema(agg.GetGroupByCols()...)
+	// 处理sel的表达式
+	// 此时sel.Condition已经被CNF处理过，互相之间是AND的关系
+	for _, cond := range sel.Conditions {
+		switch cond.(type) {
+		case *expression.Constant:
+			// Consider SQL list "select sum(b) from t group by a having 1=0". "1=0" is a constant predicate which should be
+			// retained and pushed down at the same time. Because we will get a wrong query result that contains one column
+			// with value 0 rather than an empty query result.
+			pushedExprs = append(pushedExprs, cond)
+			remainedExprs = append(remainedExprs, cond)
+		case *expression.ScalarFunction:
+			// sel中的col是否被agg所包含， 如果包含，可以下推，如果不包含，无法下推
+			extractedCols := expression.ExtractColumns(cond)
+			for _, col := range extractedCols {
+				if !groupByColumns.Contains(col) {
+					remainedExprs = append(remainedExprs, cond)
+					goto CANNOTPUSH
+				}
+			}
+			pushedExprs = append(pushedExprs, cond)
+
+		default:
+			// column 无法下推？？？
+			remainedExprs = append(remainedExprs, cond)
+		}
+	CANNOTPUSH:
+	}
+	// If no condition can be pushed, keep the selection unchanged.
+	// case1
+	if len(pushedExprs) == 0 {
+		return nil, false, false, nil
+	}
+	sctx := sel.SCtx()
+	// 构造 pushed_sel->x
+	childGroup := old.Children[0].GetExpr().Children[0]
+	pushedSel := plannercore.LogicalSelection{Conditions: pushedExprs}.Init(sctx)
+	pushedGroupExpr := memo.NewGroupExpr(pushedSel)
+	pushedGroupExpr.SetChildren(childGroup)
+	pushedGroup := memo.NewGroupWithSchema(pushedGroupExpr, childGroup.Prop.Schema)
+
+	// 继续构造 agg->pushed_sel->x
+	aggGroupExpr := memo.NewGroupExpr(agg)
+	aggGroupExpr.SetChildren(pushedGroup)
+
+	// case 2: sel->agg->x transform to agg->pushed_sel->x
+	if len(remainedExprs) == 0 {
+		return []*memo.GroupExpr{aggGroupExpr}, true, false, nil
+	}
+	// case 3: sel->agg->x transform to remained_sel->agg->pushed_sel->x
+	// 构造 remained_sel->agg->pushed_sel->x
+	aggSchema := old.Children[0].Prop.Schema
+	aggGroup := memo.NewGroupWithSchema(aggGroupExpr, aggSchema)
+	remainedSel := plannercore.LogicalSelection{Conditions: remainedExprs}.Init(sctx)
+	remainedGroupExpr := memo.NewGroupExpr(remainedSel)
+	remainedGroupExpr.SetChildren(aggGroup)
+	// the real implementation in tidb 4.0 return eraseOld:false
+	return []*memo.GroupExpr{remainedGroupExpr}, true, false, nil
 }
 
 // TransformLimitToTopN transforms Limit+Sort to TopN.
@@ -598,6 +669,9 @@ func (r *PushSelDownJoin) OnTransform(old *memo.ExprIter) (newExprs []*memo.Grou
 		join.OtherConditions = otherCond
 		leftCond = leftPushCond
 		rightCond = rightPushCond
+	case plannercore.LeftOuterJoin:
+
+	case plannercore.RightOuterJoin:
 	default:
 		// TODO: Enhance this rule to deal with LeftOuter/RightOuter/Semi/SmiAnti/LeftOuterSemi/LeftOuterSemiAnti Joins.
 	}
@@ -608,6 +682,7 @@ func (r *PushSelDownJoin) OnTransform(old *memo.ExprIter) (newExprs []*memo.Grou
 		join.RightJoinKeys = append(join.RightJoinKeys, eqCond.GetArgs()[1].(*expression.Column))
 	}
 	// TODO: Update EqualConditions like what we have done in the method join.updateEQCond() before.
+	join.UpdateEQCond()
 	leftGroup = buildChildSelectionGroup(sel, leftCond, joinExpr.Children[0])
 	rightGroup = buildChildSelectionGroup(sel, rightCond, joinExpr.Children[1])
 	newJoinExpr := memo.NewGroupExpr(join)
@@ -798,5 +873,32 @@ func (r *MergeAggregationProjection) Match(old *memo.ExprIter) bool {
 // It will transform `Aggregation->Projection->X` to `Aggregation->X`.
 func (r *MergeAggregationProjection) OnTransform(old *memo.ExprIter) (newExprs []*memo.GroupExpr, eraseOld bool, eraseAll bool, err error) {
 	// TODO: implement the body according to the header comment.
-	return []*memo.GroupExpr{old.GetExpr()}, false, false, nil
+	agg := old.GetExpr().ExprNode.(*plannercore.LogicalAggregation)
+	proj := old.Children[0].GetExpr().ExprNode.(*plannercore.LogicalProjection)
+	projSchema := proj.Schema()
+
+	aggFuncs := make([]*aggregation.AggFuncDesc, len(agg.AggFuncs))
+	groupByItems := make([]expression.Expression, len(agg.GroupByItems))
+	// replace the args of aggFunc with proj's expression
+	for i, aggFunc := range agg.AggFuncs {
+		aggFuncs[i] = aggFunc.Clone()
+		newArgs := make([]expression.Expression, len(aggFunc.Args))
+		for j, arg := range aggFunc.Args {
+			newArgs[j] = expression.ColumnSubstitute(arg, projSchema, proj.Exprs)
+		}
+		aggFuncs[i].Args = newArgs
+	}
+	// replace the expression of groupByItems with proj's expression
+	for i, expr := range agg.GroupByItems {
+		groupByItems[i] = expression.ColumnSubstitute(expr, projSchema, proj.Exprs)
+	}
+	// construct a new aggregation
+	newAgg := plannercore.LogicalAggregation{
+		AggFuncs:     aggFuncs,
+		GroupByItems: groupByItems,
+	}.Init(agg.SCtx())
+	newAggExpr := memo.NewGroupExpr(newAgg)
+	newAggExpr.SetChildren(old.Children[0].GetExpr().Children...)
+	// the implementation in tidb 4.0 keep the old group expression in the group.
+	return []*memo.GroupExpr{newAggExpr}, true, false, nil
 }

@@ -195,12 +195,10 @@ func (e *ProjectionExec) parallelExecute(ctx context.Context, chk *chunk.Chunk) 
 	if !ok {
 		return nil
 	}
-
 	err := <-output.done
 	if err != nil {
 		return err
 	}
-
 	chk.SwapColumns(output.chk)
 	e.fetcher.outputCh <- output
 	return nil
@@ -378,6 +376,7 @@ func (w *projectionWorker) run(ctx context.Context) {
 		}
 		w.proj.wg.Done()
 	}()
+
 	for {
 		input := readProjectionInput(w.inputCh, w.globalFinishCh)
 		if input == nil {
@@ -386,6 +385,7 @@ func (w *projectionWorker) run(ctx context.Context) {
 
 		output = readProjectionOutput(w.outputCh, w.globalFinishCh)
 		if output == nil {
+			logutil.BgLogger().Info("EvaluatorSuite output nil")
 			return
 		}
 

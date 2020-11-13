@@ -132,6 +132,7 @@ func (s *testFailDBSuite) TestAddIndexFailed(c *C) {
 	// Split the table.
 	s.cluster.SplitTable(s.mvccStore, tblID, 100)
 
+	logutil.BgLogger().Info("TestAddIndexFailed")
 	tk.MustExec("alter table t add index idx_b(b)")
 
 }

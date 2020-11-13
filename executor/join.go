@@ -18,6 +18,7 @@ import (
 	"sync"
 
 	"github.com/pingcap/errors"
+
 	"github.com/pingcap/tidb/expression"
 	plannercore "github.com/pingcap/tidb/planner/core"
 	"github.com/pingcap/tidb/util"
@@ -146,7 +147,7 @@ func (e *HashJoinExec) Next(ctx context.Context, req *chunk.Chunk) (err error) {
 }
 
 func (e *HashJoinExec) fetchAndBuildHashTable(ctx context.Context) error {
-	// TODO: Implementing the building hash table stage.
+	// TODO: Implementing the building hash table stage. (done)
 
 	// In this stage, you'll read the data from the inner side executor of the join operator and
 	// then use its data to build hash table.
@@ -154,6 +155,30 @@ func (e *HashJoinExec) fetchAndBuildHashTable(ctx context.Context) error {
 	// You'll need to store the hash table in `e.rowContainer`
 	// and you can call `newHashRowContainer` in `executor/hash_table.go` to build it.
 	// In this stage you can only assign value for `e.rowContainer` without changing any value of the `HashJoinExec`.
+	if e.rowContainer == nil {
+		buildKeyColIdx := make([]int, len(e.innerKeys))
+		for i := range e.innerKeys {
+			buildKeyColIdx[i] = e.innerKeys[i].Index
+		}
+		hCtx := &hashContext{
+			allTypes:  retTypes(e.innerSideExec),
+			keyColIdx: buildKeyColIdx,
+		}
+		ls := chunk.NewList(hCtx.allTypes, e.ctx.GetSessionVars().MaxChunkSize, e.ctx.GetSessionVars().MaxChunkSize)
+		e.rowContainer = newHashRowContainer(e.ctx, int(e.innerSideEstCount), hCtx, ls)
+	}
+	for {
+		chk := chunk.NewChunkWithCapacity(e.innerSideExec.base().retFieldTypes, e.ctx.GetSessionVars().MaxChunkSize)
+		if err := Next(ctx, e.innerSideExec, chk); err != nil {
+			return err
+		}
+		if chk.NumRows() == 0 {
+			break
+		}
+		if err := e.rowContainer.PutChunk(chk); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -211,7 +236,6 @@ func (e *HashJoinExec) fetchOuterSideChunks(ctx context.Context) {
 			}
 			return
 		}
-
 		if outerSideResult.NumRows() == 0 {
 			return
 		}
@@ -241,15 +265,57 @@ func (e *HashJoinExec) fetchAndProbeHashTable(ctx context.Context) {
 }
 
 func (e *HashJoinExec) runJoinWorker(workerID uint, outerKeyColIdx []int) {
-	// TODO: Implement the worker of probing stage.
+	// TODO: Implement the worker of probing stage. (done)
 
 	// In this method, you read the data from the channel e.outerResultChs[workerID].
 	// Then use `e.join2Chunk` method get the joined result `joinResult`,
 	// and put the `joinResult` into the channel `e.joinResultCh`.
 
 	// You may pay attention to:
-	// 
+	//
 	// - e.closeCh, this is a channel tells that the join can be terminated as soon as possible.
+
+	ok, joinResult := e.getNewJoinResult(workerID)
+	if !ok {
+		return
+	}
+	// reuse some variable
+	var (
+		outerChk              *chunk.Chunk
+		selected              = make([]bool, 0, chunk.InitialCapacity)
+		emptyOuterChkResource = &outerChkResource{
+			dest: e.outerResultChs[workerID],
+		}
+		hCtx = &hashContext{
+			allTypes:  retTypes(e.outerSideExec),
+			keyColIdx: outerKeyColIdx,
+		}
+	)
+
+	for {
+		select {
+		case <-e.closeCh:
+			return
+		case outerChk, ok = <-e.outerResultChs[workerID]:
+		}
+
+		if !ok {
+			break
+		}
+		ok, joinResult = e.join2Chunk(workerID, outerChk, hCtx, joinResult, selected)
+		if !ok {
+			break
+		}
+		// reset and send back
+		outerChk.Reset()
+		emptyOuterChkResource.chk = outerChk
+		e.outerChkResourceCh <- emptyOuterChkResource
+	}
+	if joinResult == nil {
+		return
+	} else if joinResult.err != nil || (joinResult.chk != nil && joinResult.chk.NumRows() > 0) {
+		e.joinResultCh <- joinResult
+	}
 }
 
 func (e *HashJoinExec) getNewJoinResult(workerID uint) (bool, *hashjoinWorkerResult) {
